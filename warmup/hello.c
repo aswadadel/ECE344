@@ -1,8 +1,7 @@
 #include "common.h"
 
-int
-main()
-{
-	TBD();
+int main()
+{	
+	printf("Hello world\n");
 	return 0;
 }
