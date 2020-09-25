@@ -10,7 +10,6 @@
 #define s 100
 
 struct element{
-	struct element *next;
 	unsigned int count;
 	char word[s];
 };
@@ -21,30 +20,20 @@ struct wc {
 	struct element *table[m];
 };
 
-long long hashFunc(char str[]){
-	long long hash = 5381;
-	int length = strlen(str);
-	
-	for(int i = 0; i < length; i++){
-		hash = ((hash << 5) + hash) + str[i];
-	}
-
-	if(hash<0) hash = -hash;
-	hash = hash%m;
-
+long long hashFunc(long long hash, char c){
+	hash = ((hash << 5) + hash) + c;
 	return hash;
 }
 
-void insert(struct wc *wc, char str[]){
-	long long key = hashFunc(str);
-	
+void insert(struct wc *wc, char str[], long long key){
+//check if word already exists in slot
 	if(wc->table[key] != NULL){
 		if(strcmp(wc->table[key]->word, str) == 0){
 			wc->table[key]->count++;
 			return;
 		}
 	}
-
+//if slot is not empty, check next slots for matching string or NULL slot
 	while(wc->table[key] != NULL){
 		if(strcmp(wc->table[key]->word, str) == 0){
 			wc->table[key]->count++;
@@ -52,7 +41,7 @@ void insert(struct wc *wc, char str[]){
 		}
 		key = (key+1)%m;
 	}
-
+//insert new element in the first empty slot encountered
 	struct element *slot = (struct element *)malloc(sizeof(struct element));
 	slot->count = 1;
 	strcpy(slot->word, str);
@@ -67,24 +56,33 @@ wc_init(char *word_array, long size)
 
 	wc = (struct wc *)malloc(sizeof(struct wc));
 	assert(wc);
-	
-
-	char word[s] = "\0";
 	wc->poolSize = 0;
+	
+//initial variables
+	char word[s] = "\0";
 	int wordLength = 0;
+	long long hash = 5381;
+
 	for(int i = 0; i < size; i++){
 		if(isspace(word_array[i])){
+			//in case of 2 adjacent spaces
 			if(strlen(word) <= 0) continue;
-			insert(wc, word);
+			//format hash
+			if(hash<0) hash = -hash;
+			hash = hash%m;
+			//insert word at hash
+			insert(wc, word, hash);
+			//reset variables
 			word[0] = '\0';
 			wordLength = 0;
+			hash = 5381;
 		} else{
-			//int size = strlen(word);
+			//append string and calculate hash
+			hash = hashFunc(hash, word_array[i]);
 			word[wordLength++] = word_array[i];
 			word[wordLength] = '\0';
 		}
 	}
-
 	return wc;
 }
 
