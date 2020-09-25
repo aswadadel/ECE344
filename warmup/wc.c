@@ -71,16 +71,17 @@ wc_init(char *word_array, long size)
 
 	char word[s] = "\0";
 	wc->poolSize = 0;
-	
+	int wordLength = 0;
 	for(int i = 0; i < size; i++){
 		if(isspace(word_array[i])){
 			if(strlen(word) <= 0) continue;
 			insert(wc, word);
 			word[0] = '\0';
+			wordLength = 0;
 		} else{
-			int size = strlen(word);
-			word[size] = word_array[i];
-			word[size+1] = '\0';
+			//int size = strlen(word);
+			word[wordLength++] = word_array[i];
+			word[wordLength] = '\0';
 		}
 	}
 
