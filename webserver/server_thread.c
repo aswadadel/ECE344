@@ -4,6 +4,9 @@
 #include <pthread.h>
 #include <string.h>
 #include <ctype.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #define m 40000081
 #define s 100
@@ -16,6 +19,7 @@ struct element{
 	struct element *prev;
 	struct element *next;
 	struct element *hash_next;
+	struct element *exile_next;
 	int in_use;
 };
 
@@ -24,6 +28,8 @@ struct LRU{
 	struct element *table[m];
 	struct element *head;
 	struct element *tail;
+	struct element *exileHead;
+	int max_size;
 	int cache_size;
 };
 
@@ -39,7 +45,9 @@ long long hashFunc(char *c){
 	return hash%m;	
 }
 
-
+struct exileElem{
+	struct element *head;
+};
 
 struct queue{
 	int *data;
@@ -108,33 +116,48 @@ file_data_free(struct file_data *data)
 
 //elementary LRU funcs
 
+void print_thread(char * c){
+	pid_t x = syscall(__NR_gettid);
+	fprintf(stderr, "%d: %s\n", x, c);
+}
+
 void free_elem(struct element *elem){
-	if(elem->file != NULL)file_data_free(elem->file);
+	if(elem == NULL) return;
+	if(elem->file == NULL) return;
+	int i = elem->file->file_size * 8;
+	while(i--!=0);
+
+}
+
+void destroy_elem(struct element *elem){
+	if(elem == NULL) return;
+	if(elem->file != NULL){
+	  if(elem->file->file_name != NULL) free(elem->file->file_name);
+	  if(elem->file->file_buf != NULL) free(elem->file->file_buf);
+	  free(elem->file);
+	  }
 	free(elem);
 }
 
+
 struct element *hash_find(struct LRU *LRU, char str[]){
-	//fprintf(stderr, "hash find\n");
+	print_thread("hash find");
 	long long key = hashFunc(str);
 	struct element *head = LRU->table[key];
 
 	if(head != NULL){
 		if(head->file == NULL)
-			//fprintf(stderr, "here\n");
+			print_thread("file not available");
 		if(strcmp(head->file->file_name, str) == 0){
-			//fprintf(stderr, "hash find done\n");
 			return head;
 		}
-		//fprintf(stderr, "or here\n");
 		while(head != NULL){
 			if(strcmp(head->file->file_name, str) == 0){
-				//fprintf(stderr, "hash find done\n");
 				return head;
 			}
 			head = head->hash_next;
 		}
 	}
-	//fprintf(stderr, "hash find NUL\n");
 	return NULL;
 }
 
@@ -142,52 +165,50 @@ struct element *hash_delete(struct LRU *LRU, char str[]){
 	
 	long long key = hashFunc(str);
 	struct element *temp = LRU->table[key];
-	
-	if(temp == NULL) return NULL;
-	if(strcmp(temp->file->file_name, str) == 0){
-	fprintf(stderr,"here6\n");
-		free_elem(temp);
-		LRU->table[key] = NULL;
-	} else{
-		while(strcmp(temp->hash_next->file->file_name, str) != 0){
-			temp = temp->hash_next;
-		}
-		struct element *temp2 = temp->hash_next;
-		temp->hash_next = temp2->hash_next;
-		free_elem(temp2);
+	if(temp == NULL){
+	   	print_thread("prob here");
+		return NULL;
 	}
+	if(strcmp(temp->file->file_name, str) == 0){
+		LRU->table[key] = temp->hash_next;
+		free_elem(temp);
+		return NULL;
+	}
+	struct element *prev = temp;
+	temp = temp->hash_next;
+	while(temp != NULL && strcmp(temp->file->file_name, str) != 0){
+		prev = temp;
+		temp = temp->hash_next;
+	}
+	if(temp==NULL) print_thread("couldnt find elem");
+	prev->next = temp->hash_next;
+
+	free_elem(temp);
 
 	return NULL;
 }
 
 void hash_insert(struct LRU *LRU, struct element *elem){
+	if(elem->file == NULL) print_thread("element was empty");
 	long long key = hashFunc(elem->file->file_name);
-	struct element *head = LRU->table[key];
-	
-	if(head != NULL){
-		elem->hash_next = head;
-		LRU->table[key] = elem;
-	} else{
-		LRU->table[key] = elem;
-		elem->hash_next = NULL;
-		return;
-	}
+
+	elem->hash_next = LRU->table[key];
+	LRU->table[key] = elem;
 }
 
 void list_push(struct LRU *LRU, struct element *elem){
-	if(LRU->tail == NULL){
-		LRU->head = elem;
-		LRU->tail = elem;
-	} else{
-		elem->next = LRU->head;
+	elem->next = LRU->head;
+	if(LRU->head != NULL){
 		LRU->head->prev = elem;
-		LRU->head = elem;
+	} else{
+		LRU->tail = elem;
 	}
+	LRU->head = elem;
 	elem->prev = NULL;
 }
 
 struct element *list_pop(struct LRU *LRU, struct element *elem){
-	if(LRU->head == NULL) return NULL;
+	if(elem == NULL) return NULL;
 	if(elem->prev == NULL) LRU->head = elem->next;
 	else elem->prev->next = elem->next;
 	if(elem->next == NULL) LRU->tail = elem->prev;
@@ -196,6 +217,16 @@ struct element *list_pop(struct LRU *LRU, struct element *elem){
 }
 
 
+void printList(struct LRU *LRU){
+	struct element *head = LRU->head;
+	int i = 0;
+	while(head != NULL){
+		i++;
+		head = head->next;
+	}
+	fprintf(stderr, "%d\n", i);
+}
+
 struct element *cache_search(struct LRU *LRU, char *str){
 	//fprintf(stderr, "cache search\n");
 	struct element *elem = hash_find(LRU, str);
@@ -203,11 +234,9 @@ struct element *cache_search(struct LRU *LRU, char *str){
 		//fprintf(stderr, "cache search NUL\n");
 		return NULL;
 	}
-	elem = list_pop(LRU, elem);
+	list_pop(LRU, elem);
 	if(elem == NULL) {
 		fprintf(stderr, "cache search NULLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL\n");
-		exit(0);
-		return NULL;
 	}
 	list_push(LRU, elem);
 	return elem;
@@ -216,29 +245,20 @@ struct element *cache_search(struct LRU *LRU, char *str){
 int evict(struct LRU *LRU){
 	struct element *tail = LRU->tail;
 	if(tail == NULL) return -1;
-	while(tail->in_use != 0){
-		tail = tail->prev;
-		if(tail == NULL) return -1;
+	if(tail->in_use != 0) return -1;
+	if(tail->file == NULL){
+		printList(LRU);
+		//print_thread("here1");
+		list_pop(LRU, tail);
+		return 0;
 	}
-	int fileSize = 0;
-	if(tail->file != NULL){
-		fprintf(stderr,"here1\n");
-		fileSize = tail->file->file_size;
-	}	
-	//deal with the doubly linked list
-	struct element *temp = list_pop(LRU, tail);
-	if(temp == NULL){
-		fprintf(stderr,"here4\n");
-		return -2;
-	}
-	//deal with the hash table
-	if(tail->file != NULL){
-
-	fprintf(stderr,"here5\n");
-		temp = hash_delete(LRU, tail->file->file_name);
-	}
-
+	int fileSize = tail->file->file_size;
 	LRU->cache_size -= fileSize;
+	//deal with the doubly linked list
+	list_pop(LRU, tail);
+	//deal with the hash table
+	hash_delete(LRU, tail->file->file_name);
+
 	return fileSize;
 }
 int max_available_size(struct LRU *LRU, int max_size, int req_size){
@@ -259,54 +279,69 @@ int max_available_size(struct LRU *LRU, int max_size, int req_size){
 }
 int cache_evict(struct LRU *LRU, int max_size, int evict_size){
 	if(max_size - LRU->cache_size > evict_size) return 1;
+	//print_thread("error here");
 	int totSize = max_available_size(LRU, max_size, evict_size);
-	if(totSize < evict_size){
-		return -1;
-	}
-
+	//print_thread("not here");
+	//if(totSize < evict_size){
+	//	return -1;
+	//}
+	//fprintf(stderr, "totSize: %d, evictSize: %d\n", totSize, evict_size);
+	
 	while(evict_size > 0){
-
-	fprintf(stderr,"evict S\n");
+		//print_thread("evict S");
 		int temp = evict(LRU);
-	fprintf(stderr,"evict E\n");
+		//print_thread("evict E");
 		if(temp <= -1) {
 			return -1;
 		}
 		evict_size -= temp;
 	}
+	evict_size = totSize;
 	return 1;
 }
 
 struct element *cache_insert(struct LRU *LRU, int max_size, struct file_data *file){
-	fprintf(stderr, "cache insert\n");
 	int new_size = file->file_size;
-	fprintf(stderr, "cache evict S\n");
 	int ret = cache_evict(LRU, max_size, new_size);
-	fprintf(stderr, "cache evict E\n");
 	if(ret == 1){
 		struct element *elem = (struct element *)Malloc(sizeof(struct element));
-		elem->file = file;
+		elem->file = file_data_init();
+		elem->file->file_name = strdup(file->file_name);
+		elem->file->file_buf = strdup(file->file_buf);
+		elem->file->file_size = file->file_size;
+		//file_data_free(something);
+		
+		//elem->file = file;
 		hash_insert(LRU, elem);
 		list_push(LRU, elem);
 		LRU->cache_size += elem->file->file_size;
 		elem->in_use = 1;
-		fprintf(stderr, "cache insert done\n");
 		return elem;
 	} else {
-		fprintf(stderr, "cache insert NUL\n");
 		return NULL;
 	}
 	return NULL;
 }
 
+
+
 void LRU_destroy(struct LRU *LRU)
 {
-	struct element *elem = list_pop(LRU, LRU->tail);
+	struct element *elem = LRU->head;
+	struct element *prev = NULL;
 	while(elem != NULL){
-		free_elem(elem);
-		elem = list_pop(LRU, LRU->tail);
+		prev = elem;
+		elem = elem->next;
+		destroy_elem(prev);
 	}
-	free(LRU->table);
+/*	elem = LRU->exileHead;
+	prev = NULL;
+	while(elem != NULL){
+		prev = elem;
+		elem = elem->exile_next;
+		destroy_elem(prev);
+	}
+*/
 	free(LRU);
 }
 
@@ -339,43 +374,37 @@ do_server_request(struct server *sv, int connfd)
 		pthread_mutex_lock(&sv->cache_lock);
 		struct element *elem = cache_search(sv->LRU, data->file_name);
 		if(elem != NULL){ //cache hit
-			//fprintf(stderr, "cache hit \n");
 			elem->in_use++;
-			data->file_buf = elem->file->file_buf;
+			data->file_buf = strdup(elem->file->file_buf);
 			data->file_size = elem->file->file_size;
 
 			pthread_mutex_unlock(&sv->cache_lock);
 			request_sendfile(rq);
 			pthread_mutex_lock(&sv->cache_lock);
-
+			
 			elem->in_use--;
 			pthread_mutex_unlock(&sv->cache_lock);
-			//fprintf(stderr, "cache hit DONE\n");
 			goto out;
 		} else{ //cache miss
-			//fprintf(stderr, "cache miss\n");
 			pthread_mutex_unlock(&sv->cache_lock);
 			ret = request_readfile(rq);
 			if(!ret) goto out;
 			pthread_mutex_lock(&sv->cache_lock);
-			//fprintf(stderr, "insert S\n");
 			
 			elem = cache_insert(sv->LRU, sv->max_cache_size, data);
-			//fprintf(stderr, "insert E\n");
 			pthread_mutex_unlock(&sv->cache_lock);
 			request_sendfile(rq);
 			if(elem != NULL){
 				pthread_mutex_lock(&sv->cache_lock);
-				//fprintf(stderr, "cache miss inserted\n");
+				if(elem->file == NULL) print_thread("maybe here");
 				elem->in_use--;
 				pthread_mutex_unlock(&sv->cache_lock);
 			}
-			//fprintf(stderr, "cache miss done\n");
 		}
 	}
 	out:
 	request_destroy(rq);
-	//file_data_free(data);
+	file_data_free(data);
 }
 
 /* entry point functions */
@@ -393,6 +422,7 @@ server_init(int nr_threads, int max_requests, int max_cache_size)
 	
 	sv->LRU = (struct LRU *)Malloc(sizeof(struct LRU));
 	sv->LRU->cache_size = 0;
+	sv->LRU->max_size = max_cache_size;
 	sv->LRU->head = sv->LRU->tail = NULL;
 	//sv->LRU->table = (struct element *)Malloc(sizeof(struct element *)* m);
 	
@@ -461,7 +491,7 @@ server_exit(struct server *sv)
 	}
 	free(sv->q.data);
 	free(sv->threads);
-	//LRU_destroy(sv->LRU);
+	LRU_destroy(sv->LRU);
 	/* make sure to free any allocated resources */
 	free(sv);
 }
